@@ -1,0 +1,15 @@
+{
+  "name": "retailcrm-dashboard",
+  "version": "1.0.0",
+  "description": "Дашборд заказов RetailCRM + Supabase + Telegram",
+  "scripts": {
+    "upload": "node scripts/upload_orders.js",
+    "sync": "node scripts/sync_to_supabase.js",
+    "bot": "node scripts/telegram_webhook.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^16.3.1",
+    "node-fetch": "^2.7.0"
+  }
+}

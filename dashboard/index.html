@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Дашборд заказов</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen">
+
+  <div class="max-w-5xl mx-auto px-4 py-10">
+
+    <!-- Заголовок -->
+    <h1 class="text-3xl font-bold mb-2">Дашборд заказов</h1>
+    <p id="last-updated" class="text-sm text-gray-400 mb-8"></p>
+
+    <!-- Карточки статистики -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
+      <div class="bg-white rounded-2xl shadow-sm p-6">
+        <p class="text-sm text-gray-400 mb-1">Всего заказов</p>
+        <p id="stat-total" class="text-3xl font-semibold">—</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm p-6">
+        <p class="text-sm text-gray-400 mb-1">Общая сумма</p>
+        <p id="stat-sum" class="text-3xl font-semibold">—</p>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm p-6">
+        <p class="text-sm text-gray-400 mb-1">Средний чек</p>
+        <p id="stat-avg" class="text-3xl font-semibold">—</p>
+      </div>
+    </div>
+
+    <!-- График -->
+    <div class="bg-white rounded-2xl shadow-sm p-6 mb-10">
+      <h2 class="text-lg font-semibold mb-4">Заказы по дням</h2>
+      <canvas id="chart" height="100"></canvas>
+    </div>
+
+    <!-- Таблица -->
+    <div class="bg-white rounded-2xl shadow-sm p-6">
+      <h2 class="text-lg font-semibold mb-4">Последние 10 заказов</h2>
+      <div id="error-msg" class="text-red-500 text-sm mb-2 hidden"></div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-400 border-b">
+              <th class="pb-2 pr-4">Номер</th>
+              <th class="pb-2 pr-4">Клиент</th>
+              <th class="pb-2 pr-4">Сумма</th>
+              <th class="pb-2 pr-4">Статус</th>
+              <th class="pb-2">Дата</th>
+            </tr>
+          </thead>
+          <tbody id="orders-table-body">
+            <tr>
+              <td colspan="5" class="py-6 text-center text-gray-300">Загрузка...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // =============================================
+    // Настройки Supabase — замените на свои значения
+    // =============================================
+    const SUPABASE_URL = 'https://rfsznqyccldxwxfqszeq.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJmc3pucXljY2xkeHd4ZnFzemVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxNTk5MzUsImV4cCI6MjA5MTczNTkzNX0.PGX6OG8rxGigXYa70Jcda7LCzRHjGyZtyIZA09CNnAE';
+    // =============================================
+
+    const STATUS_LABELS = {
+      new:              'Новый',
+      processing:       'В обработке',
+      complete:         'Завершён',
+      cancel:           'Отменён',
+      delivery:         'Доставка',
+      'offer-analog':   'Предложение',
+      'in-transit':     'В пути',
+      'call-center':    'Колл-центр',
+      assembling:       'Сборка',
+      'assembling-complete': 'Собран',
+    };
+
+    const STATUS_COLORS = {
+      new:              'bg-blue-100 text-blue-700',
+      processing:       'bg-yellow-100 text-yellow-700',
+      complete:         'bg-green-100 text-green-700',
+      cancel:           'bg-red-100 text-red-700',
+      delivery:         'bg-purple-100 text-purple-700',
+      'offer-analog':   'bg-orange-100 text-orange-700',
+      'in-transit':     'bg-cyan-100 text-cyan-700',
+      'call-center':    'bg-pink-100 text-pink-700',
+      assembling:       'bg-indigo-100 text-indigo-700',
+      'assembling-complete': 'bg-teal-100 text-teal-700',
+    };
+
+    function formatMoney(value) {
+      return Number(value).toLocaleString('ru-RU') + ' ₸';
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '—';
+      return new Date(iso).toLocaleDateString('ru-RU', {
+        day: '2-digit', month: '2-digit', year: 'numeric'
+      });
+    }
+
+    async function loadOrders() {
+      const headers = {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      };
+
+      // Последние 10 для таблицы
+      const tableRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/orders?select=*&order=created_at.desc&limit=10`,
+        { headers }
+      );
+
+      if (!tableRes.ok) {
+        const err = await tableRes.text();
+        throw new Error(`Supabase error (${tableRes.status}): ${err}`);
+      }
+
+      const tableOrders = await tableRes.json();
+
+      // Все заказы за последние 14 дней для графика
+      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const chartRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/orders?select=created_at,total_sum&order=created_at.asc&created_at=gte.${since}`,
+        { headers }
+      );
+      const chartOrders = await chartRes.json();
+
+      return { tableOrders, chartOrders };
+    }
+
+    function renderTable(orders) {
+      const tbody = document.getElementById('orders-table-body');
+      if (!orders.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-gray-300">Нет данных</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = orders.map(o => {
+        const statusKey = o.status || '';
+        const statusLabel = STATUS_LABELS[statusKey] || statusKey;
+        const statusClass = STATUS_COLORS[statusKey] || 'bg-gray-100 text-gray-600';
+
+        return `
+          <tr class="border-b last:border-0 hover:bg-gray-50 transition">
+            <td class="py-3 pr-4 font-medium">${o.number || '—'}</td>
+            <td class="py-3 pr-4 text-gray-600">${o.customer_name || '—'}</td>
+            <td class="py-3 pr-4 font-medium">${formatMoney(o.total_sum)}</td>
+            <td class="py-3 pr-4">
+              <span class="px-2 py-0.5 rounded-full text-xs font-medium ${statusClass}">${statusLabel}</span>
+            </td>
+            <td class="py-3 text-gray-500">${formatDate(o.created_at)}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderStats(orders) {
+      if (!orders.length) return;
+      const total = orders.length;
+      const sum = orders.reduce((acc, o) => acc + Number(o.total_sum || 0), 0);
+      const avg = sum / total;
+
+      document.getElementById('stat-total').textContent = total;
+      document.getElementById('stat-sum').textContent = formatMoney(sum);
+      document.getElementById('stat-avg').textContent = formatMoney(Math.round(avg));
+    }
+
+    function renderChart(orders) {
+      // Группируем по дате
+      const byDay = {};
+      for (const o of orders) {
+        if (!o.created_at) continue;
+        const day = o.created_at.substring(0, 10);
+        byDay[day] = (byDay[day] || 0) + 1;
+      }
+
+      const labels = Object.keys(byDay).sort();
+      const values = labels.map(d => byDay[d]);
+
+      const ctx = document.getElementById('chart').getContext('2d');
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels.map(d => formatDate(d)),
+          datasets: [{
+            label: 'Заказов',
+            data: values,
+            backgroundColor: 'rgba(99, 102, 241, 0.2)',
+            borderColor: 'rgba(99, 102, 241, 0.8)',
+            borderWidth: 2,
+            borderRadius: 6,
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: { stepSize: 1 },
+              grid: { color: 'rgba(0,0,0,0.05)' }
+            },
+            x: { grid: { display: false } }
+          }
+        }
+      });
+    }
+
+    async function init() {
+      try {
+        const { tableOrders, chartOrders } = await loadOrders();
+
+        renderTable(tableOrders);
+        renderStats(chartOrders);  // статистика по всем заказам за 30 дней
+        renderChart(chartOrders);
+
+        document.getElementById('last-updated').textContent =
+          'Обновлено: ' + new Date().toLocaleString('ru-RU');
+      } catch (err) {
+        const errEl = document.getElementById('error-msg');
+        errEl.textContent = 'Ошибка загрузки данных: ' + err.message;
+        errEl.classList.remove('hidden');
+
+        document.getElementById('orders-table-body').innerHTML =
+          '<tr><td colspan="5" class="py-6 text-center text-gray-300">Не удалось загрузить данные</td></tr>';
+
+        console.error(err);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
